@@ -44,7 +44,7 @@ def onnx_node_attributes_to_dict(args):
     return {arg.name: onnx_attribute_to_dict(arg) for arg in args}
 
 
-def calculate_macs(model: onnx.ModelProto) -> int:
+def calculate_macs(model: onnx.ModelProto, inputs=[], dim_names={}) -> int:
     orig_model = model
     model = onnx.ModelProto()
     model.CopyFrom(orig_model)
@@ -62,14 +62,21 @@ def calculate_macs(model: onnx.ModelProto) -> int:
         11: np.float64
     }
 
-    def to_dims(v: onnx.ValueInfoProto) -> [int]:
-        return [i.dim_value for i in v.type.tensor_type.shape.dim]
+    if not isinstance(inputs, dict):
+        inputs = {model.graph.input[i].name: v.shape for i, v in enumerate(inputs)}
 
+    def to_dims(v: onnx.ValueInfoProto) -> [int]:
+        return [i.dim_value or dim_names[i.dim_param] for i in v.type.tensor_type.shape.dim]
+
+    input_shapes = {}
     for graph_input in model.graph.input:
-        if graph_input.name not in graph_weights:
-            input_sample[graph_input.name] = \
-                np.zeros(to_dims(graph_input),
-                         dtype=type_mapping[graph_input.type.tensor_type.elem_type])
+        if graph_input.name in graph_weights:
+            continue
+        input_shape = inputs[graph_input.name] if graph_input.name in inputs else to_dims(graph_input)
+        input_shapes[graph_input.name] = input_shape
+        input_sample[graph_input.name] = \
+            np.zeros(input_shape,
+                        dtype=type_mapping[graph_input.type.tensor_type.elem_type])
 
     output_mapping = {k: i for i, k in enumerate(graph_outputs)}
     for n in onnx_nodes:
@@ -89,10 +96,17 @@ def calculate_macs(model: onnx.ModelProto) -> int:
         shaped_model = onnx.ModelProto()
         shaped_model.CopyFrom(orig_model)
         del shaped_model.graph.value_info[:]
+        for i in shaped_model.graph.input:
+            if i.name not in input_shapes:
+                continue
+            i.type.tensor_type.shape.ClearField('dim')
+            for s in input_shapes[i.name]:
+                i.type.tensor_type.shape.dim.add().dim_value = s            
+
         shaped_model = onnx.shape_inference.infer_shapes(shaped_model, data_prop=True, strict_mode=True)
 
         output_shapes = {**{i.name: to_dims(i) for i in shaped_model.graph.value_info},
-                         **{i.name: to_dims(i) for i in shaped_model.graph.input},
+                         **{i.name: input_shapes[i.name] for i in shaped_model.graph.input},
                          **{i.name: to_dims(i) for i in shaped_model.graph.output},
                          }
     except onnx.shape_inference.InferenceError as e:
@@ -173,6 +187,7 @@ def calculate_macs(model: onnx.ModelProto) -> int:
         'Unsqueeze': no_macs,
         'Split': no_macs,
         'Cast': no_macs,
+        'Identity': no_macs,
         'Upsample': upsample_macs,
         'Resize': upsample_macs,
     }

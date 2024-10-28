@@ -9,14 +9,18 @@ from onnx_opcounter import calculate_macs
 import onnx
 
 
-def check_macs(model, input):
+def check_macs(model, input, export_opts={}, calc_opts={}):
     macs, params = profile(model, inputs=(input,))
 
     with tempfile.TemporaryDirectory() as tmp:
         torch.onnx.export(model, input, os.path.join(tmp, "_model.onnx"),
-                          verbose=True, input_names=['input'], output_names=['output'], opset_version=16)
+                          verbose=True,
+                          input_names=['input'],
+                          output_names=['output'],
+                          opset_version=16,
+                          **export_opts)
         onnx_model = onnx.load_model(os.path.join(tmp, "_model.onnx"))
-        onnx_macs = calculate_macs(onnx_model)
+        onnx_macs = calculate_macs(onnx_model, **calc_opts)
         print('macs', macs)
         print('onnx_macs', onnx_macs)
         assert int(macs) == int(onnx_macs)
@@ -99,6 +103,22 @@ def test_upsample_case1(inputs, scale_factor, mode):
 
     input = torch.randn((1, inputs,  32, 32))
     check_macs(model, input)
+
+
+@pytest.mark.parametrize('inputs', [1, 2])
+def test_dynamic_axes(inputs):
+    model = nn.Sequential(nn.BatchNorm2d(1, affine=False))
+    model.eval()
+
+    input = torch.randn((inputs, 1, 224, 224))
+    export_opts = {
+        'dynamic_axes': {'input': {0: 'B'}, 'output': {0: 'B'}}
+    }
+    check_macs(model, input)
+    check_macs(model, input, export_opts=export_opts, calc_opts={"dim_names": {'B': inputs}})
+    check_macs(model, input, export_opts=export_opts, calc_opts={"inputs": [input]})
+
+
 #
 # model = nn.Sequential(nn.Upsample(
 #     scale_factor=4, mode='bilinear'
