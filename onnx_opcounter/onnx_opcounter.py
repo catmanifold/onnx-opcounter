@@ -11,8 +11,7 @@ def calculate_params(model: onnx.ModelProto) -> int:
 
     for onnx_w in onnx_weights:
         try:
-            weight = numpy_helper.to_array(onnx_w)
-            params += np.prod(weight.shape)
+            params += np.prod(onnx_w.dims)
         except Exception as _:
             pass
 
